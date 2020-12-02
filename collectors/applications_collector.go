@@ -31,6 +31,43 @@ type ApplicationsCollector struct {
 	lastApplicationsScrapeDurationSecondsMetric prometheus.Gauge
 }
 
+type application struct {
+	app               cfclient.AppSummary
+	buildpack         string
+	detectedBuildpack string
+	space             cfclient.Space
+	org               cfclient.Org
+}
+
+func newApplication(
+	app cfclient.AppSummary,
+	space cfclient.Space,
+	org cfclient.Org,
+) *application {
+	detectedBuildpack := app.DetectedBuildpack
+	if detectedBuildpack == "" {
+		detectedBuildpack = app.Buildpack
+	}
+
+	buildpack := app.Buildpack
+	if buildpack == "" {
+		buildpack = app.DetectedBuildpack
+	}
+
+	return &application{
+		app:               app,
+		buildpack:         buildpack,
+		detectedBuildpack: detectedBuildpack,
+		space:             space,
+		org:               org,
+	}
+}
+
+var (
+	appCache      = []*application(nil)
+	appErrorCache = error(nil)
+)
+
 func NewApplicationsCollector(
 	namespace string,
 	environment string,
@@ -142,7 +179,7 @@ func NewApplicationsCollector(
 		},
 	)
 
-	return &ApplicationsCollector{
+	c := &ApplicationsCollector{
 		namespace:                                   namespace,
 		environment:                                 environment,
 		deployment:                                  deployment,
@@ -158,6 +195,10 @@ func NewApplicationsCollector(
 		lastApplicationsScrapeTimestampMetric:       lastApplicationsScrapeTimestampMetric,
 		lastApplicationsScrapeDurationSecondsMetric: lastApplicationsScrapeDurationSecondsMetric,
 	}
+
+	c.appSchedule(300 * time.Second)
+
+	return c
 }
 
 func (c ApplicationsCollector) Collect(ch chan<- prometheus.Metric) {
@@ -203,10 +244,30 @@ func (c ApplicationsCollector) reportApplicationsMetrics(ch chan<- prometheus.Me
 	c.applicationMemoryMbMetric.Reset()
 	c.applicationDiskQuotaMbMetric.Reset()
 
-	organizations, err := c.cfClient.ListOrgs()
+	c.loadFromCache(appCache)
+
+	err := appErrorCache
+
 	if err != nil {
 		log.Errorf("Error while listing organization: %v", err)
 		return err
+	}
+
+	c.applicationInfoMetric.Collect(ch)
+	c.applicationInstancesMetric.Collect(ch)
+	c.applicationInstancesRunningMetric.Collect(ch)
+	c.applicationMemoryMbMetric.Collect(ch)
+	c.applicationDiskQuotaMbMetric.Collect(ch)
+
+	return nil
+}
+
+func (c ApplicationsCollector) getApplicationMetrics() error {
+	log.Info("Scraping...")
+
+	organizations, err := c.cfClient.ListOrgs()
+	if err != nil {
+		log.Errorf("Error while listing organization: %v", err)
 	}
 
 	wg := sizedwaitgroup.New(concurrentOrganizationsGoroutines)
@@ -217,7 +278,7 @@ func (c ApplicationsCollector) reportApplicationsMetrics(ch chan<- prometheus.Me
 		go func(organization cfclient.Org) {
 			defer wg.Done()
 
-			err := c.getOrgSpaces(ch, organization)
+			err := c.getOrgSpaces(organization)
 			if err != nil {
 				errChannel <- err
 			}
@@ -227,16 +288,10 @@ func (c ApplicationsCollector) reportApplicationsMetrics(ch chan<- prometheus.Me
 	wg.Wait()
 	close(errChannel)
 
-	c.applicationInfoMetric.Collect(ch)
-	c.applicationInstancesMetric.Collect(ch)
-	c.applicationInstancesRunningMetric.Collect(ch)
-	c.applicationMemoryMbMetric.Collect(ch)
-	c.applicationDiskQuotaMbMetric.Collect(ch)
-
 	return <-errChannel
 }
 
-func (c ApplicationsCollector) getOrgSpaces(ch chan<- prometheus.Metric, organization cfclient.Org) error {
+func (c ApplicationsCollector) getOrgSpaces(organization cfclient.Org) error {
 	spaces, err := c.cfClient.OrgSpaces(organization.Guid)
 	if err != nil {
 		log.Errorf("Error while listing spaces for organization `%s`: %v", organization.Guid, err)
@@ -251,7 +306,7 @@ func (c ApplicationsCollector) getOrgSpaces(ch chan<- prometheus.Metric, organiz
 		go func(space cfclient.Space) {
 			defer wg.Done()
 
-			err := c.getSpaceSummary(ch, organization, space)
+			err := c.getSpaceSummary(organization, space)
 			if err != nil {
 				errChannel <- err
 			}
@@ -264,28 +319,35 @@ func (c ApplicationsCollector) getOrgSpaces(ch chan<- prometheus.Metric, organiz
 	return <-errChannel
 }
 
-func (c ApplicationsCollector) getSpaceSummary(ch chan<- prometheus.Metric, organization cfclient.Org, space cfclient.Space) error {
+func (c ApplicationsCollector) getSpaceSummary(organization cfclient.Org, space cfclient.Space) error {
 	spaceSummary, err := space.Summary()
 	if err != nil {
 		log.Errorf("Error while getting summary for space `%s`: %v", space.Guid, err)
 		return err
 	}
 
+	tc := appCache
 	for _, application := range spaceSummary.Apps {
-		detected_buildpack := application.DetectedBuildpack
-		if detected_buildpack == "" {
-			detected_buildpack = application.Buildpack
-		}
+		thisApp := newApplication(application, space, organization)
+		tc = append(tc, thisApp)
+	}
+	appCache = tc
 
-		buildpack := application.Buildpack
-		if buildpack == "" {
-			buildpack = application.DetectedBuildpack
-		}
+	return nil
+}
+
+func (c ApplicationsCollector) loadFromCache(ca []*application) {
+	for _, app := range ca {
+		application := app.app
+		detectedBuildpack := app.detectedBuildpack
+		buildpack := app.buildpack
+		organization := app.org
+		space := app.space
 
 		c.applicationInfoMetric.WithLabelValues(
 			application.Guid,
 			application.Name,
-			detected_buildpack,
+			detectedBuildpack,
 			buildpack,
 			organization.Guid,
 			organization.Name,
@@ -333,6 +395,4 @@ func (c ApplicationsCollector) getSpaceSummary(ch chan<- prometheus.Metric, orga
 			space.Name,
 		).Set(float64(application.DiskQuota))
 	}
-
-	return nil
 }

@@ -9,16 +9,37 @@ import (
 )
 
 type ServiceBindingsCollector struct {
-	namespace                                      string
-	environment                                    string
-	deployment                                     string
-	cfClient                                       *cfclient.Client
-	serviceBindingInfoMetric                       *prometheus.GaugeVec
-	serviceBindingsScrapesTotalMetric              prometheus.Counter
-	serviceBindingsScrapeErrorsTotalMetric         prometheus.Counter
-	lastServiceBindingsScrapeErrorMetric           prometheus.Gauge
-	lastServiceBindingsScrapeTimestampMetric       prometheus.Gauge
-	lastServiceBindingsScrapeDurationSecondsMetric prometheus.Gauge
+	namespace                                               string
+	environment                                             string
+	deployment                                              string
+	cfClient                                                *cfclient.Client
+	serviceBindingInfoMetric                                *prometheus.GaugeVec
+	serviceBindingsScrapesTotalMetric                       prometheus.Counter
+	serviceBindingsScrapeErrorsTotalMetric                  prometheus.Counter
+	lastServiceBindingsScrapeErrorMetric                    prometheus.Gauge
+	lastServiceBindingsScrapeTimestampMetric                prometheus.Gauge
+	lastServiceBindingsScrapeDurationSecondsMetric          prometheus.Gauge
+	lastServiceBindingsScheduledScrapeDurationSecondsMetric prometheus.Gauge
+}
+
+var (
+	cachedServiceBindings      = []cfclient.ServiceBinding(nil)
+	cachedServiceBindingsError = error(nil)
+	cachedServiceBindingsTime  = 0.0
+)
+
+func cacheServiceBindingsMetrics(cfClient *cfclient.Client) {
+	log.Infof("Scraping...")
+	var begun = time.Now()
+
+	serviceBindings, err := cfClient.ListServiceBindings()
+	if err != nil {
+		log.Errorf("Error while listing routes: %v", err)
+	}
+	cachedServiceBindings = serviceBindings
+	cachedServiceBindingsError = err
+
+	cachedServiceBindingsTime = time.Since(begun).Seconds()
 }
 
 func NewServiceBindingsCollector(
@@ -27,6 +48,8 @@ func NewServiceBindingsCollector(
 	deployment string,
 	cfClient *cfclient.Client,
 ) *ServiceBindingsCollector {
+	schedule(cfClient, cacheServiceBindingsMetrics, 300*time.Second)
+
 	serviceBindingInfoMetric := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace:   namespace,
@@ -88,6 +111,16 @@ func NewServiceBindingsCollector(
 		},
 	)
 
+	lastServiceBindingsScheduledScrapeDurationSecondsMetric := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace:   namespace,
+			Subsystem:   "",
+			Name:        "last_service_bindings_scheduled_scrape_duration_seconds",
+			Help:        "Duration of the last scrape of Service Bindings metrics from Cloud Foundry.",
+			ConstLabels: prometheus.Labels{"environment": environment, "deployment": deployment},
+		},
+	)
+
 	return &ServiceBindingsCollector{
 		namespace:                                      namespace,
 		environment:                                    environment,
@@ -99,6 +132,7 @@ func NewServiceBindingsCollector(
 		lastServiceBindingsScrapeErrorMetric:           lastServiceBindingsScrapeErrorMetric,
 		lastServiceBindingsScrapeTimestampMetric:       lastServiceBindingsScrapeTimestampMetric,
 		lastServiceBindingsScrapeDurationSecondsMetric: lastServiceBindingsScrapeDurationSecondsMetric,
+		lastServiceBindingsScheduledScrapeDurationSecondsMetric: lastServiceBindingsScheduledScrapeDurationSecondsMetric,
 	}
 }
 
@@ -123,6 +157,9 @@ func (c ServiceBindingsCollector) Collect(ch chan<- prometheus.Metric) {
 
 	c.lastServiceBindingsScrapeDurationSecondsMetric.Set(time.Since(begun).Seconds())
 	c.lastServiceBindingsScrapeDurationSecondsMetric.Collect(ch)
+
+	c.lastServiceBindingsScheduledScrapeDurationSecondsMetric.Set(cachedServiceBindingsTime)
+	c.lastServiceBindingsScheduledScrapeDurationSecondsMetric.Collect(ch)
 }
 
 func (c ServiceBindingsCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -137,7 +174,8 @@ func (c ServiceBindingsCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c ServiceBindingsCollector) reportServiceBindingsMetrics(ch chan<- prometheus.Metric) error {
 	c.serviceBindingInfoMetric.Reset()
 
-	serviceBindings, err := c.cfClient.ListServiceBindings()
+	serviceBindings := cachedServiceBindings
+	err := cachedServiceBindingsError
 	if err != nil {
 		log.Errorf("Error while listing service bindings: %v", err)
 		return err

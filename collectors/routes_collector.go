@@ -9,16 +9,37 @@ import (
 )
 
 type RoutesCollector struct {
-	namespace                             string
-	environment                           string
-	deployment                            string
-	cfClient                              *cfclient.Client
-	routeInfoMetric                       *prometheus.GaugeVec
-	routesScrapesTotalMetric              prometheus.Counter
-	routesScrapeErrorsTotalMetric         prometheus.Counter
-	lastRoutesScrapeErrorMetric           prometheus.Gauge
-	lastRoutesScrapeTimestampMetric       prometheus.Gauge
-	lastRoutesScrapeDurationSecondsMetric prometheus.Gauge
+	namespace                                      string
+	environment                                    string
+	deployment                                     string
+	cfClient                                       *cfclient.Client
+	routeInfoMetric                                *prometheus.GaugeVec
+	routesScrapesTotalMetric                       prometheus.Counter
+	routesScrapeErrorsTotalMetric                  prometheus.Counter
+	lastRoutesScrapeErrorMetric                    prometheus.Gauge
+	lastRoutesScrapeTimestampMetric                prometheus.Gauge
+	lastRoutesScrapeDurationSecondsMetric          prometheus.Gauge
+	lastRoutesScheduledScrapeDurationSecondsMetric prometheus.Gauge
+}
+
+var (
+	cachedRoute      = []cfclient.Route(nil)
+	cachedRouteError = error(nil)
+	cachedRouteTime  = 0.0
+)
+
+func cacheRouteMetrics(cfClient *cfclient.Client) {
+	log.Infof("Scraping...")
+	var begun = time.Now()
+
+	routes, err := cfClient.ListRoutes()
+	if err != nil {
+		log.Errorf("Error while listing routes: %v", err)
+	}
+	cachedRoute = routes
+	cachedRouteError = err
+
+	cachedRouteTime = time.Since(begun).Seconds()
 }
 
 func NewRoutesCollector(
@@ -27,6 +48,8 @@ func NewRoutesCollector(
 	deployment string,
 	cfClient *cfclient.Client,
 ) *RoutesCollector {
+	schedule(cfClient, cacheRouteMetrics, 300*time.Second)
+
 	routeInfoMetric := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace:   namespace,
@@ -88,6 +111,16 @@ func NewRoutesCollector(
 		},
 	)
 
+	lastRoutesScheduledScrapeDurationSecondsMetric := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace:   namespace,
+			Subsystem:   "",
+			Name:        "last_routes_scheduled_scrape_duration_seconds",
+			Help:        "Duration of the last scheduled scrape of Routes metrics from Cloud Foundry.",
+			ConstLabels: prometheus.Labels{"environment": environment, "deployment": deployment},
+		},
+	)
+
 	return &RoutesCollector{
 		namespace:                             namespace,
 		environment:                           environment,
@@ -99,6 +132,7 @@ func NewRoutesCollector(
 		lastRoutesScrapeErrorMetric:           lastRoutesScrapeErrorMetric,
 		lastRoutesScrapeTimestampMetric:       lastRoutesScrapeTimestampMetric,
 		lastRoutesScrapeDurationSecondsMetric: lastRoutesScrapeDurationSecondsMetric,
+		lastRoutesScheduledScrapeDurationSecondsMetric: lastRoutesScheduledScrapeDurationSecondsMetric,
 	}
 }
 
@@ -123,6 +157,9 @@ func (c RoutesCollector) Collect(ch chan<- prometheus.Metric) {
 
 	c.lastRoutesScrapeDurationSecondsMetric.Set(time.Since(begun).Seconds())
 	c.lastRoutesScrapeDurationSecondsMetric.Collect(ch)
+
+	c.lastRoutesScheduledScrapeDurationSecondsMetric.Set(cachedRouteTime)
+	c.lastRoutesScheduledScrapeDurationSecondsMetric.Collect(ch)
 }
 
 func (c RoutesCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -137,9 +174,9 @@ func (c RoutesCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c RoutesCollector) reportRoutesMetrics(ch chan<- prometheus.Metric) error {
 	c.routeInfoMetric.Reset()
 
-	routes, err := c.cfClient.ListRoutes()
+	routes := cachedRoute
+	err := cachedRouteError
 	if err != nil {
-		log.Errorf("Error while listing routes: %v", err)
 		return err
 	}
 
