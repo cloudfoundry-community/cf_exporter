@@ -42,7 +42,7 @@ func NewEventsCollector(
 			Help:        "Labeled Cloud Foundry Events information with a constant '1' value.",
 			ConstLabels: prometheus.Labels{"environment": environment, "deployment": deployment},
 		},
-		[]string{"type", "actor", "actor_type", "actor_name", "actor_username", "actee", "actee_type", "actee_name", "space_id", "organization_id"},
+		[]string{"event_id","create_time","type", "actor", "actor_type", "actor_name", "actor_username", "actee", "actee_type", "actee_name", "space_id", "organization_id"},
 	)
 
 	eventsScrapesTotalMetric := prometheus.NewCounter(
@@ -169,6 +169,8 @@ func (c EventsCollector) reportEventsMetrics(ch chan<- prometheus.Metric) error 
 
 	for _, event := range events {
 		c.eventsInfoMetric.WithLabelValues(
+			event.GUID,
+			event.CreatedAt,
 			event.Type,
 			event.Actor,
 			event.ActorType,

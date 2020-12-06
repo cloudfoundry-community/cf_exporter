@@ -37,6 +37,7 @@ var _ = Describe("EventsCollectors", func() {
 		deployment  = "test_deployment"
 
 		eventId1        = "fake_event_1"
+		createTime1     = "2019-05-11T07:33:45Z"
 		type1           = "audit.route.delete-request"
 		actor1          = "fake_actor_1"
 		actorType1      = "user"
@@ -49,6 +50,7 @@ var _ = Describe("EventsCollectors", func() {
 		organizationId1 = "fake_organization_id_1"
 
 		eventId2        = "fake_event_2"
+		createTime2     = "2019-05-22T07:33:45Z"
 		type2           = "audit.app.update"
 		actor2          = "fake_actor_2"
 		actorType2      = "user"
@@ -87,10 +89,10 @@ var _ = Describe("EventsCollectors", func() {
 				Help:        "Labeled Cloud Foundry Events information with a constant '1' value.",
 				ConstLabels: prometheus.Labels{"environment": environment, "deployment": deployment},
 			},
-			[]string{"type", "actor", "actor_type", "actor_name", "actor_username", "actee", "actee_type", "actee_name", "space_id", "organization_id"},
+			[]string{"event_id","create_time","type", "actor", "actor_type", "actor_name", "actor_username", "actee", "actee_type", "actee_name", "space_id", "organization_id"},
 		)
-		eventsInfoMetric.WithLabelValues(type1, actor1, actorType1, actorName1, actorUsername1, actee1, acteeType1, acteeName1, spaceId1, organizationId1).Set(1)
-		eventsInfoMetric.WithLabelValues(type2, actor2, actorType2, actorName2, actorUsername2, actee2, acteeType2, acteeName2, spaceId2, organizationId2).Set(1)
+		eventsInfoMetric.WithLabelValues(eventId1,createTime1,type1, actor1, actorType1, actorName1, actorUsername1, actee1, acteeType1, acteeName1, spaceId1, organizationId1).Set(1)
+		eventsInfoMetric.WithLabelValues(eventId2,createTime2,type2, actor2, actorType2, actorName2, actorUsername2, actee2, acteeType2, acteeName2, spaceId2, organizationId2).Set(1)
 
 		eventsScrapesTotalMetric = prometheus.NewCounter(
 			prometheus.CounterOpts{
@@ -219,8 +221,8 @@ var _ = Describe("EventsCollectors", func() {
 						},
 						Entity: cfclient.Event{
 							GUID:             eventId1,
+							CreatedAt:        createTime1,
 							Type:             type1,
-							CreatedAt:        "foo",
 							Actor:            actor1,
 							ActorType:        actorType1,
 							ActorName:        actorName1,
@@ -238,8 +240,8 @@ var _ = Describe("EventsCollectors", func() {
 						},
 						Entity: cfclient.Event{
 							GUID:             eventId2,
+							CreatedAt:        createTime2,
 							Type:             type2,
-							CreatedAt:        "foo",
 							Actor:            actor2,
 							ActorType:        actorType2,
 							ActorName:        actorName2,
